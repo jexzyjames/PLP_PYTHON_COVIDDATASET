@@ -1,0 +1,262 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+import os
+
+# --- Configuration ---
+# Set the path to your downloaded CSV file
+# Make sure 'owid-covid-data.csv' is in the same directory as this script,
+# or provide the full path to the file.
+DATA_FILE = 'owid-covid-data.csv'
+
+# Define countries of interest for detailed analysis
+COUNTRIES_OF_INTEREST = ['United States', 'India', 'Brazil', 'United Kingdom', 'Kenya', 'South Africa']
+
+# Set Matplotlib style for better aesthetics
+sns.set_style("whitegrid")
+plt.rcParams['figure.figsize'] = (12, 7) # Default figure size for plots
+
+
+# --- 1️⃣ Data Collection (Action: Downloaded manually) ---
+# Goal: Obtain a reliable COVID-19 dataset.
+# Action: Ensure 'owid-covid-data.csv' is saved in your working folder.
+print("--- 1️⃣ Data Collection ---")
+print(f"Please ensure '{DATA_FILE}' is downloaded from 'Our World in Data' and placed in the same directory as this script.")
+print("Proceeding to load data...")
+
+
+# --- 2️⃣ Data Loading & Exploration ---
+# Goal: Load the dataset and explore its structure.
+print("\n--- 2️⃣ Data Loading & Exploration ---")
+
+try:
+    df = pd.read_csv(DATA_FILE)
+    print(f"Dataset '{DATA_FILE}' loaded successfully.")
+except FileNotFoundError:
+    print(f"Error: The file '{DATA_FILE}' was not found.")
+    print("Please download 'owid-covid-data.csv' and place it in the correct directory.")
+    exit() # Exit the script if the file is not found
+except pd.errors.EmptyDataError:
+    print(f"Error: The file '{DATA_FILE}' is empty.")
+    exit()
+except Exception as e:
+    print(f"An unexpected error occurred during file loading: {e}")
+    exit()
+
+# Check columns
+print("\nDataset Columns:")
+print(df.columns.tolist())
+
+# Preview rows
+print("\nFirst 5 rows of the dataset:")
+print(df.head())
+
+# Identify missing values
+print("\nMissing values before cleaning (sum per column):")
+print(df.isnull().sum().sort_values(ascending=False).head(20)) # Display top 20 columns with most missing values
+
+
+# --- 3️⃣ Data Cleaning ---
+# Goal: Prepare data for analysis.
+print("\n--- 3️⃣ Data Cleaning ---")
+
+# Convert 'date' column to datetime objects
+print("Converting 'date' column to datetime format...")
+df['date'] = pd.to_datetime(df['date'], errors='coerce') # 'coerce' will turn unparseable dates into NaT
+
+# Drop rows where 'date' is missing (NaT) as it's a critical value
+initial_rows = df.shape[0]
+df.dropna(subset=['date'], inplace=True)
+print(f"Dropped {initial_rows - df.shape[0]} rows with missing dates.")
+
+# Filter countries of interest
+print(f"Filtering data for countries: {', '.join(COUNTRIES_OF_INTEREST)}...")
+df_filtered = df[df['location'].isin(COUNTRIES_OF_INTEREST)].copy() # Use .copy() to avoid SettingWithCopyWarning
+
+# Sort data by location and date for proper interpolation
+df_filtered.sort_values(by=['location', 'date'], inplace=True)
+
+# Handle missing numeric values
+# For cumulative metrics (total_cases, total_deaths, total_vaccinations),
+# forward-fill missing values first, then interpolate to fill any remaining NaNs
+# (e.g., at the beginning of a series for a location).
+# For new_cases, new_deaths, fill NaNs with 0 as they represent daily counts.
+
+critical_numeric_cols = [
+    'total_cases', 'total_deaths', 'new_cases', 'new_deaths',
+    'total_vaccinations', 'people_vaccinated', 'people_fully_vaccinated',
+    'total_boosters', 'new_vaccinations', 'icu_patients', 'hosp_patients',
+    'reproduction_rate', 'stringency_index', 'excess_mortality'
+]
+
+for col in critical_numeric_cols:
+    if col in df_filtered.columns:
+        # Fill new_cases/new_deaths with 0 as they are daily counts
+        if 'new_' in col:
+            df_filtered[col].fillna(0, inplace=True)
+        else:
+            # For cumulative metrics, forward-fill then interpolate
+            df_filtered[col] = df_filtered.groupby('location')[col].ffill()
+            df_filtered[col] = df_filtered.groupby('location')[col].interpolate(method='linear')
+            df_filtered[col].fillna(0, inplace=True) # Fill any remaining NaNs (e.g., at start of group)
+
+print("\nMissing values after cleaning (sum per column for filtered data):")
+print(df_filtered.isnull().sum().sort_values(ascending=False).head(10)) # Check again
+
+
+# --- 4️⃣ Exploratory Data Analysis (EDA) ---
+# Goal: Generate descriptive statistics & explore trends.
+print("\n--- 4️⃣ Exploratory Data Analysis (EDA) ---")
+
+# Basic statistics for numerical columns in the filtered data
+print("\nBasic statistics for numerical columns (filtered data):")
+print(df_filtered.describe())
+
+# Calculate the death rate: total_deaths / total_cases
+# Handle division by zero by replacing inf with NaN, then fill NaN with 0
+df_filtered['death_rate'] = (df_filtered['total_deaths'] / df_filtered['total_cases']) * 100
+df_filtered['death_rate'].replace([np.inf, -np.inf], np.nan, inplace=True)
+df_filtered['death_rate'].fillna(0, inplace=True) # If total_cases was 0, death_rate is 0
+
+print("\nAverage death rate per country (where data is available):")
+print(df_filtered.groupby('location')['death_rate'].mean().sort_values(ascending=False))
+
+
+# --- 4️⃣ EDA Visualizations ---
+
+# Line chart: Total cases over time for selected countries
+plt.figure(figsize=(14, 8))
+sns.lineplot(data=df_filtered, x='date', y='total_cases', hue='location', marker='o', markersize=4, linewidth=2)
+plt.title('Total COVID-19 Cases Over Time by Country')
+plt.xlabel('Date')
+plt.ylabel('Total Cases')
+plt.yscale('log') # Use log scale for better visualization of exponential growth
+plt.ticklabel_format(style='plain', axis='y') # Prevent scientific notation on y-axis
+plt.grid(True, linestyle='--', alpha=0.7)
+plt.legend(title='Country', bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.tight_layout()
+plt.show()
+print("Generated: Line chart of Total COVID-19 Cases Over Time by Country.")
+
+
+# Line chart: Total deaths over time for selected countries
+plt.figure(figsize=(14, 8))
+sns.lineplot(data=df_filtered, x='date', y='total_deaths', hue='location', marker='o', markersize=4, linewidth=2)
+plt.title('Total COVID-19 Deaths Over Time by Country')
+plt.xlabel('Date')
+plt.ylabel('Total Deaths')
+plt.yscale('log') # Use log scale
+plt.ticklabel_format(style='plain', axis='y')
+plt.grid(True, linestyle='--', alpha=0.7)
+plt.legend(title='Country', bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.tight_layout()
+plt.show()
+print("Generated: Line chart of Total COVID-19 Deaths Over Time by Country.")
+
+# Bar chart: Top countries by total cases (latest date)
+latest_data = df_filtered.groupby('location').last().reset_index()
+latest_data_sorted_cases = latest_data.sort_values(by='total_cases', ascending=False)
+
+plt.figure(figsize=(12, 7))
+sns.barplot(x='location', y='total_cases', data=latest_data_sorted_cases, palette='viridis')
+plt.title('Total COVID-19 Cases by Country (Latest Available Data)')
+plt.xlabel('Country')
+plt.ylabel('Total Cases')
+plt.ticklabel_format(style='plain', axis='y')
+plt.grid(axis='y', linestyle='--', alpha=0.7)
+plt.xticks(rotation=45, ha='right')
+plt.tight_layout()
+plt.show()
+print("Generated: Bar chart of Total COVID-19 Cases by Country (Latest Available Data).")
+
+# Line chart: Daily new cases comparison
+plt.figure(figsize=(14, 8))
+sns.lineplot(data=df_filtered, x='date', y='new_cases', hue='location', linewidth=2)
+plt.title('Daily New COVID-19 Cases Over Time by Country')
+plt.xlabel('Date')
+plt.ylabel('Daily New Cases')
+plt.yscale('log') # Log scale for better visibility of peaks
+plt.ticklabel_format(style='plain', axis='y')
+plt.grid(True, linestyle='--', alpha=0.7)
+plt.legend(title='Country', bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.tight_layout()
+plt.show()
+print("Generated: Line chart of Daily New COVID-19 Cases Over Time by Country.")
+
+
+# --- 5️⃣ Visualizing Vaccination Progress ---
+# Goal: Analyze vaccination rollouts.
+print("\n--- 5️⃣ Visualizing Vaccination Progress ---")
+
+# Plot cumulative vaccinations over time for selected countries
+plt.figure(figsize=(14, 8))
+sns.lineplot(data=df_filtered, x='date', y='total_vaccinations', hue='location', marker='o', markersize=4, linewidth=2)
+plt.title('Total COVID-19 Vaccinations Over Time by Country')
+plt.xlabel('Date')
+plt.ylabel('Total Vaccinations')
+plt.yscale('log') # Use log scale
+plt.ticklabel_format(style='plain', axis='y')
+plt.grid(True, linestyle='--', alpha=0.7)
+plt.legend(title='Country', bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.tight_layout()
+plt.show()
+print("Generated: Line chart of Total COVID-19 Vaccinations Over Time by Country.")
+
+# Compare % vaccinated population (people_vaccinated_per_hundred)
+# Get the latest available data for vaccination percentages
+latest_vaccination_data = df_filtered.dropna(subset=['people_vaccinated_per_hundred']).groupby('location').last().reset_index()
+latest_vaccination_data_sorted = latest_vaccination_data.sort_values(by='people_vaccinated_per_hundred', ascending=False)
+
+if not latest_vaccination_data_sorted.empty:
+    plt.figure(figsize=(12, 7))
+    sns.barplot(x='location', y='people_vaccinated_per_hundred', data=latest_vaccination_data_sorted, palette='plasma')
+    plt.title('Percentage of Population Vaccinated (at least one dose - Latest Data)')
+    plt.xlabel('Country')
+    plt.ylabel('People Vaccinated (%)')
+    plt.grid(axis='y', linestyle='--', alpha=0.7)
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+    plt.show()
+    print("Generated: Bar chart of Percentage of Population Vaccinated.")
+else:
+    print("No 'people_vaccinated_per_hundred' data available for selected countries to plot.")
+
+
+# --- 7️⃣ Insights & Reporting ---
+# Goal: Summarize findings.
+print("\n--- 7️⃣ Insights & Reporting ---")
+
+print("\n--- Key Insights from COVID-19 Data Analysis ---")
+
+# Insight 1: Overall trend of cases and deaths
+print("\n**1. General Trend of Cases and Deaths:**")
+print("   - The line charts for total cases and deaths show a clear exponential growth pattern initially, followed by a plateau or slower growth in later periods, indicating the global spread and impact of the pandemic.")
+print("   - Using a logarithmic scale helps in visualizing the early phases of growth more clearly across different magnitudes.")
+
+# Insight 2: Comparison of total cases among selected countries
+if not latest_data_sorted_cases.empty:
+    top_country_cases = latest_data_sorted_cases.iloc[0]
+    print(f"\n**2. Country-wise Case Burden:**")
+    print(f"   - As of the latest available data, {top_country_cases['location']} has the highest reported total cases among the selected countries, highlighting its significant burden.")
+    print("   - The bar chart clearly illustrates the varying cumulative impact across different nations.")
+
+# Insight 3: Vaccination Progress
+if not latest_vaccination_data_sorted.empty:
+    top_vaccinated_country = latest_vaccination_data_sorted.iloc[0]
+    print(f"\n**3. Vaccination Rollout Progress:**")
+    print(f"   - The vaccination charts indicate a rapid rollout in many countries, with {top_vaccinated_country['location']} showing a high percentage of its population vaccinated ({top_vaccinated_country['people_vaccinated_per_hundred']:.2f}%).")
+    print("   - This suggests varying speeds and priorities in vaccination campaigns globally.")
+else:
+    print("\n**3. Vaccination Rollout Progress:**")
+    print("   - (No specific vaccination insights due to lack of data for selected countries in the filtered set.)")
+
+
+# Insight 4: Death Rate Variation (if applicable)
+death_rate_analysis = df_filtered.groupby('location')['death_rate'].mean().sort_values(ascending=False)
+if not death_rate_analysis.empty:
+    print("\n**4. Death Rate Observations:**")
+    print(f"   - The average death rate varies by country. For instance, {death_rate_analysis.index[0]} shows a higher average death rate compared to others, which could be influenced by factors like testing rates, healthcare capacity, and demographic structures.")
+    print("   - It's important to note that death rate calculations depend heavily on accurate case reporting.")
+
+print("\n--- End of Report ---")
